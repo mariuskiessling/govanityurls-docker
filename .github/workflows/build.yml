@@ -1,0 +1,116 @@
+# Copyright 2022 Marius Kießling
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Build Docker image
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  # This is needed to create tags and releases.
+  contents: write
+  packages: write
+  # This is used to complete the identity challenge with sigstore/fulcio for
+  # the key-less signature of the image.
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mariuskiessling/govanityurls
+  UPSTREAM_COMMIT: 2171d0d238171419154716a938118badc72ad20b
+  UPSTREAM_VERSION: v0.1.0
+
+jobs:
+  build:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@09a077b27eb1310dcfb21981bee195b30ce09de0
+        with:
+          cosign-release: 'v1.10.0'
+
+      - name: Set up Docker buildx
+        uses: docker/setup-buildx-action@dc7b9719a96d48369863986a06765841d7ea23f6
+
+      - name: Log into registry
+        uses: docker/login-action@49ed152c8eca782a232dede0303416e8f356c37b
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@69f6fc9d46f2f8bf0d5491e4aabe0bb8c6a4678a
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=auto
+          tags: |
+            type=semver,pattern={{raw}},value=${{ env.UPSTREAM_VERSION }}
+          # The documentation and vendor labels are required to overwrite the
+          # labels of the base image. Let's also be a nice citizen of the
+          # ecosystem and set the base image labels.
+          labels: |
+            org.opencontainers.image.authors=Marius Kießling <vcs@mariuskiessling.de>
+            org.opencontainers.image.url=https://github.com/mariuskiessling/govanityurls-docker
+            org.opencontainers.image.documentation=https://github.com/mariuskiessling/govanityurls-docker
+            org.opencontainers.image.source=https://github.com/mariuskiessling/govanityurls-docker
+            org.opencontainers.image.version=${{ env.UPSTREAM_VERSION }}
+            org.opencontainers.image.vendor=Marius Kießling
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.title=govanityurls
+            org.opencontainers.image.description=Google Cloud Platform's govanityurls packaged for Docker
+            org.opencontainers.image.base.name=gcr.io/distroless/static
+
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@1cb9d22b932e4832bb29793b7777ec860fc1cde0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          build-args: UPSTREAM_COMMIT=${{ env.UPSTREAM_COMMIT }}
+
+      - name: Sign Docker image
+        # --recursive signs each multi-arch image additionally
+        run: |
+          cosign sign --recursive \
+            -a upstream-commit=${{ env.UPSTREAM_COMMIT }} \
+            -a upstream-version=${{ env.UPSTREAM_VERSION }} \
+            -a github-run-id=${{ github.run_id }} \
+            ${TAGS}
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          # As the key-less signatures are still considered experimental, we
+          # have to set this key.
+          COSIGN_EXPERIMENTAL: true
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: ${{ env.UPSTREAM_VERSION }}
+          tag_name: ${{ env.UPSTREAM_VERSION }}
+          target_commitish: ${{ github.sha }}
